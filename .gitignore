@@ -1,0 +1,18 @@
+# Environment / secrets
+.env
+*.env
+
+# Database (use a Railway volume, not git)
+*.db
+*.sqlite
+*.sqlite3
+
+# Old JSON data file
+war_data.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
