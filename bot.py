@@ -65,18 +65,18 @@ ALL_UNITS = sorted(
 
 MAP_HEXES = [
     "Acrithia", "Allod's Bight", "Ash Fields", "Basin Sionnach",
-    "Bright's Marsh", "Callahan's Passage", "Callum's Cape",
-    "Clahstra", "Clanshead Valley", "Deadlands", "Drowned Vale",
-    "Endless Shore", "Farranac Coast", "Fisherman's Row",
-    "Godcrofts", "Great March", "Heartlands", "Howl County",
-    "Kalokai", "King's Cage", "Loch Mór", "Marban Hollow",
-    "Moors", "Morgen's Crossing", "Nevish Line", "Oarbreaker Isles",
-    "Origin", "Reaching Trail", "Reaver's Pass", "Reaversgrave",
-    "Refuge", "Sanctum", "Shackled Chasm", "Sinking Sands",
-    "Snagglemast Ridge", "Speaking Woods", "Stema Landing",
-    "Stlican Shelf", "Stone Cradle", "Tempest Island",
-    "Terminus", "The Fingers", "Umbral Wildwood", "Viper Pit",
-    "Weathered Expanse", "Westgate",
+    "Callahan's Passage", "Callum's Cape", "Clanshead Valley",
+    "Deadlands", "Endless Shore", "Farranac Coast", "Fisherman's Row",
+    "Godcrofts", "Great March", "Howl County", "Kalokai", "King's Cage",
+    "Kuura Strand", "Loch Mór", "Lykos Isle", "Marban Hallow",
+    "Morgen's Crossing", "Nevish Line", "Oarbreaker Isles", "Olavis Wake",
+    "Onyx", "Origin", "Palantine Berm", "Pari Peak", "Piper's Enclave",
+    "Reaching Trail", "Reaver's Pass", "Red River", "Sableport",
+    "Shackled Chasm", "Speaking Woods", "Stema Landing", "Stlican Shelf",
+    "Stonecradle", "Tempest Island", "Terminus", "The Clahstra",
+    "The Drowned Vale", "The Fingers", "The Gutter", "The Heartlands",
+    "The Linn of Mercy", "The Moors", "Tyrant Foothills", "Umbral Wildwood",
+    "Viper Pit", "Weathered Expanse", "Westgate", "Wresta",
 ]
 
 
@@ -188,9 +188,8 @@ def add_loss(reporter_id: int, reporter_name: str, unit: str, quantity: int,
         )
 
 
-def user_in_entry(uid: int, entry: dict) -> bool:
-    if entry["reporter_id"] == uid:
-        return True
+def user_in_crew(uid: int, entry: dict) -> bool:
+    """Only counts explicitly tagged crew — reporter does not get automatic credit."""
     return any(c["id"] == uid for c in entry.get("crew", []))
 
 
@@ -224,24 +223,25 @@ async def get_report_channel(interaction: discord.Interaction) -> discord.TextCh
 class KillModal(discord.ui.Modal, title="🎯 Report Kill"):
     quantity = discord.ui.TextInput(label="Quantity", default="1", max_length=3)
     notes    = discord.ui.TextInput(
-        label="Notes (optional)", style=discord.TextStyle.paragraph,
+        label="Battle report / notes (optional)", style=discord.TextStyle.paragraph,
         required=False, max_length=300,
     )
 
     def __init__(self, unit: str, hex: str, crew: list[discord.Member]):
         super().__init__()
-        self.unit_value  = unit
-        self.hex_value   = hex
+        self.unit_value   = unit
+        self.hex_value    = hex
         self.crew_members = crew
 
     async def on_submit(self, interaction: discord.Interaction):
         war = get_war()
+        qty = int(self.quantity.value or 1)
         crew_list = [{"id": m.id, "name": str(m), "display_name": m.display_name} for m in self.crew_members]
         add_kill(
             reporter_id=interaction.user.id,
             reporter_name=str(interaction.user),
             unit=self.unit_value,
-            quantity=int(self.quantity.value or 1),
+            quantity=qty,
             location=self.hex_value,
             crew=crew_list,
             notes=self.notes.value,
@@ -249,42 +249,55 @@ class KillModal(discord.ui.Modal, title="🎯 Report Kill"):
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-        embed = discord.Embed(title="💀 Kill Reported!", color=discord.Color.green())
-        embed.add_field(name="Target",   value=f"**{self.quantity.value or 1}x {self.unit_value}**", inline=True)
-        embed.add_field(name="Location", value=self.hex_value, inline=True)
-        if crew_list:
-            embed.add_field(name="Crew", value=" ".join(f"<@{c['id']}>" for c in crew_list), inline=False)
+        crew_mentions = " ".join(f"<@{c['id']}>" for c in crew_list) if crew_list else "*No crew tagged*"
+        report_line = f"🎯 **CONFIRMED SINK** — {interaction.user.mention} reports **{qty}x {self.unit_value}** destroyed."
         if self.notes.value:
-            embed.add_field(name="Notes", value=self.notes.value, inline=False)
-        embed.set_footer(text=f"Reported by {interaction.user.display_name} • War #{war}")
+            report_line += f" *{self.notes.value}*"
+
+        embed = discord.Embed(
+            title=f"{self.unit_value} — Destroyed",
+            description=report_line,
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="📍 Location & Crew", value=f"**{self.hex_value}**\n{crew_mentions}", inline=False)
+        embed.set_footer(text=f"Logged by {interaction.user.display_name} • War #{war}")
         embed.timestamp = datetime.now(timezone.utc)
 
         await interaction.response.send_message("✅ Kill logged!", ephemeral=True)
         channel = await get_report_channel(interaction)
-        await channel.send(embed=embed)
+        try:
+            await channel.send(embed=embed)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"⚠️ I don't have permission to post in {channel.mention}. "
+                "An admin needs to run `/set_channel` in a channel I can access, "
+                "or give me **Send Messages** + **Embed Links** permissions there.",
+                ephemeral=True,
+            )
 
 
 class LossModal(discord.ui.Modal, title="⚰️ Report Loss"):
     quantity = discord.ui.TextInput(label="Quantity", default="1", max_length=3)
     notes    = discord.ui.TextInput(
-        label="Notes (optional)", style=discord.TextStyle.paragraph,
+        label="Battle report / notes (optional)", style=discord.TextStyle.paragraph,
         required=False, max_length=300,
     )
 
     def __init__(self, unit: str, hex: str, crew: list[discord.Member]):
         super().__init__()
-        self.unit_value  = unit
-        self.hex_value   = hex
+        self.unit_value   = unit
+        self.hex_value    = hex
         self.crew_members = crew
 
     async def on_submit(self, interaction: discord.Interaction):
         war = get_war()
+        qty = int(self.quantity.value or 1)
         crew_list = [{"id": m.id, "name": str(m), "display_name": m.display_name} for m in self.crew_members]
         add_loss(
             reporter_id=interaction.user.id,
             reporter_name=str(interaction.user),
             unit=self.unit_value,
-            quantity=int(self.quantity.value or 1),
+            quantity=qty,
             location=self.hex_value,
             crew=crew_list,
             notes=self.notes.value,
@@ -292,19 +305,31 @@ class LossModal(discord.ui.Modal, title="⚰️ Report Loss"):
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-        embed = discord.Embed(title="⚰️ Loss Reported", color=discord.Color.red())
-        embed.add_field(name="Unit",     value=f"**{self.quantity.value or 1}x {self.unit_value}**", inline=True)
-        embed.add_field(name="Location", value=self.hex_value, inline=True)
-        if crew_list:
-            embed.add_field(name="Crew", value=" ".join(f"<@{c['id']}>" for c in crew_list), inline=False)
+        crew_mentions = " ".join(f"<@{c['id']}>" for c in crew_list) if crew_list else "*No crew tagged*"
+        report_line = f"⚰️ **CONFIRMED LOSS** — {interaction.user.mention} reports **{qty}x {self.unit_value}** lost."
         if self.notes.value:
-            embed.add_field(name="Notes", value=self.notes.value, inline=False)
-        embed.set_footer(text=f"Reported by {interaction.user.display_name} • War #{war}")
+            report_line += f" *{self.notes.value}*"
+
+        embed = discord.Embed(
+            title=f"{self.unit_value} — Lost In Action",
+            description=report_line,
+            color=discord.Color.red(),
+        )
+        embed.add_field(name="📍 Location & Crew", value=f"**{self.hex_value}**\n{crew_mentions}", inline=False)
+        embed.set_footer(text=f"Logged by {interaction.user.display_name} • War #{war}")
         embed.timestamp = datetime.now(timezone.utc)
 
         await interaction.response.send_message("✅ Loss logged.", ephemeral=True)
         channel = await get_report_channel(interaction)
-        await channel.send(embed=embed)
+        try:
+            await channel.send(embed=embed)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"⚠️ I don't have permission to post in {channel.mention}. "
+                "An admin needs to run `/set_channel` in a channel I can access, "
+                "or give me **Send Messages** + **Embed Links** permissions there.",
+                ephemeral=True,
+            )
 
 
 # ── Bot setup ─────────────────────────────────────────────────────────────────
@@ -342,9 +367,11 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 @app_commands.describe(
     unit="Vehicle or unit you killed",
     hex="Map hex where the kill occurred",
-    crew1="First crew/regiment member",
-    crew2="Second crew/regiment member",
-    crew3="Third crew/regiment member",
+    crew1="Crew member 1",
+    crew2="Crew member 2",
+    crew3="Crew member 3",
+    crew4="Crew member 4",
+    crew5="Crew member 5",
 )
 @officer_only()
 async def kill_cmd(
@@ -353,8 +380,10 @@ async def kill_cmd(
     crew1: discord.Member = None,
     crew2: discord.Member = None,
     crew3: discord.Member = None,
+    crew4: discord.Member = None,
+    crew5: discord.Member = None,
 ):
-    crew = [m for m in [crew1, crew2, crew3] if m is not None]
+    crew = [m for m in [crew1, crew2, crew3, crew4, crew5] if m is not None]
     await interaction.response.send_modal(KillModal(unit=unit, hex=hex, crew=crew))
 
 
@@ -372,9 +401,11 @@ async def kill_hex_autocomplete(_i: discord.Interaction, current: str):
 @app_commands.describe(
     unit="Vehicle or unit that was lost",
     hex="Map hex where the loss occurred",
-    crew1="First crew/regiment member",
-    crew2="Second crew/regiment member",
-    crew3="Third crew/regiment member",
+    crew1="Crew member 1",
+    crew2="Crew member 2",
+    crew3="Crew member 3",
+    crew4="Crew member 4",
+    crew5="Crew member 5",
 )
 @officer_only()
 async def loss_cmd(
@@ -383,8 +414,10 @@ async def loss_cmd(
     crew1: discord.Member = None,
     crew2: discord.Member = None,
     crew3: discord.Member = None,
+    crew4: discord.Member = None,
+    crew5: discord.Member = None,
 ):
-    crew = [m for m in [crew1, crew2, crew3] if m is not None]
+    crew = [m for m in [crew1, crew2, crew3, crew4, crew5] if m is not None]
     await interaction.response.send_modal(LossModal(unit=unit, hex=hex, crew=crew))
 
 
@@ -404,8 +437,8 @@ async def stats_cmd(interaction: discord.Interaction):
     war = get_war()
     uid = interaction.user.id
 
-    kills  = [k for k in get_kills(war)  if user_in_entry(uid, k)]
-    losses = [l for l in get_losses(war) if user_in_entry(uid, l)]
+    kills  = [k for k in get_kills(war)  if user_in_crew(uid, k)]
+    losses = [l for l in get_losses(war) if user_in_crew(uid, l)]
 
     total_kills  = sum(k["quantity"] for k in kills)
     total_losses = sum(l["quantity"] for l in losses)
@@ -436,16 +469,13 @@ async def leaderboard_cmd(interaction: discord.Interaction):
         if uid not in tally:
             tally[uid] = {"name": name, "kills": 0, "losses": 0}
 
+    # Only crew members get credit — reporter is just the person logging the entry
     for k in get_kills(war):
-        ensure(k["reporter_id"], k["reporter_name"])
-        tally[k["reporter_id"]]["kills"] += k["quantity"]
         for c in k["crew"]:
             ensure(c["id"], c["name"])
             tally[c["id"]]["kills"] += k["quantity"]
 
     for l in get_losses(war):
-        ensure(l["reporter_id"], l["reporter_name"])
-        tally[l["reporter_id"]]["losses"] += l["quantity"]
         for c in l["crew"]:
             ensure(c["id"], c["name"])
             tally[c["id"]]["losses"] += l["quantity"]
@@ -459,7 +489,7 @@ async def leaderboard_cmd(interaction: discord.Interaction):
 
     embed = discord.Embed(title=f"🏆 Kill Leaderboard — War #{war}", color=discord.Color.gold())
     embed.description = "\n".join(lines) if lines else "No kills reported yet this war."
-    embed.set_footer(text="Use /kill and /loss to report engagements")
+    embed.set_footer(text="Tag crew members in /kill and /loss to earn credit")
     await interaction.response.send_message(embed=embed)
 
 
