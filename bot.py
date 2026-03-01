@@ -63,6 +63,56 @@ ALL_UNITS = sorted(
     set(NEUTRAL_SHIPS + COLONIAL_SHIPS + COLONIAL_PLANES + WARDEN_SHIPS + WARDEN_PLANES)
 ) + ["Other"]
 
+# ── Unit Images ────────────────────────────────────────────────────────────────
+# Map unit name → direct image URL for embed thumbnails.
+# Add image URLs here as you gather them — leave blank to omit the thumbnail.
+UNIT_IMAGES: dict[str, str] = {
+    # ── Colonial Ships ──
+    "Strider":              "https://foxhole.wiki.gg/images/thumb/StriderFront.jpg/1024px-StriderFront.jpg?68a3b1",
+    "K-81e \"Sombre\"":    "https://foxhole.wiki.gg/images/K81eSombreFront.jpg",
+    "Type B - \"Lucian\"": "https://foxhole.wiki.gg/images/Lucian_Front.jpg",
+    "Type C - \"Charon\"": "https://foxhole.wiki.gg/images/thumb/Charon_Front.jpg/1280px-Charon_Front.jpg?4bc662",
+    "Poseidon":             "https://foxhole.wiki.gg/images/PoseidonFront.jpg",
+    "Titan":                "https://foxhole.wiki.gg/images/Titan.jpg",
+    "Conqueror":            "https://foxhole.wiki.gg/images/thumb/ColonialDestroyerRender.png/1920px-ColonialDestroyerRender.png?2088ea",
+    "AC-b \"Trident\"":    "https://foxhole.wiki.gg/images/ACbTrident.jpg",
+    # ── Colonial Planes ──
+    "A51 Venti \"Daedalus\"":      "https://foxhole.wiki.gg/images/A51_Venti_%E2%80%9CDaedalus%E2%80%9D_Render.jpg",
+    "Toxot-902 \"Blind Silver\"":  "https://foxhole.wiki.gg/images/ToxotStripped.jpg",
+    "Mergo-4 \"Myrmidon\"":        "https://foxhole.wiki.gg/images/Mergo-4_%E2%80%9CMyrmidon%E2%80%9D_Render.jpg",
+    "V-1 Tzykalia":                "https://foxhole.wiki.gg/images/V-1_Tzykalia_Render.jpg",
+    "V-5b Pegasus":                "https://foxhole.wiki.gg/images/V-5b_Pegasus_Render.jpg",
+    # ── Warden Ships ──
+    "Rinnspeir Ornitier-Class Gunship": "https://foxhole.wiki.gg/images/Ornitier_front.png",
+    "68A-4 Ronan Fathomer":             "https://foxhole.wiki.gg/images/68A-4_Ronan_Fathomer_Render.jpg",
+    "81f-f Ronan Blackguard":           "https://foxhole.wiki.gg/images/81f-f_Ronan_Blackguard_Render.jpg",
+    "74b-1 Ronan Gunship":              "https://foxhole.wiki.gg/images/RonanFront_NavalUpdate.png",
+    "Mercy":                            "https://foxhole.wiki.gg/images/WardenCarrierFront.jpg",
+    "Callahan":                         "https://foxhole.wiki.gg/images/CallahanBattleship.jpg",
+    "Blacksteele":                      "https://foxhole.wiki.gg/images/BlacksteeleRear.jpg",
+    "Nakki":                            "https://foxhole.wiki.gg/images/NakkiScreenshot.jpg",
+    # ── Warden Planes ──
+    "Luminary Mk. IV Herald":       "https://foxhole.wiki.gg/images/Luminary_Mk._IV_Herald_Render.jpg",
+    "Luminary Mk. II Harbinger":    "https://foxhole.wiki.gg/images/Luminary_Mk._II_Harbinger_Render.jpg",
+    "Tulka I1.9 White Raven":       "https://foxhole.wiki.gg/images/Tulka_I1.9_White_Raven_Render.jpg",
+    "M925 Austringer Man-O-War":    "https://foxhole.wiki.gg/images/M925_Austringer_Man-O-War_Render.jpg",
+    "Tulka P4 Welkinrive":          "https://foxhole.wiki.gg/images/Tulka_P4_Welkinrive_Render.jpg",
+    "Rinnspeir Mk. I Zealot":       "https://foxhole.wiki.gg/images/Rinnspeir_Mk._I_Zealot_Render.jpg",
+    # ── Neutral Ships ──
+    "BMS - Aquatipper":      "https://foxhole.wiki.gg/images/thumb/ScreenshotBarge.png/1280px-ScreenshotBarge.png?b5ac91",
+    "BMS - Ironship":        "https://foxhole.wiki.gg/images/Freighter_ScreenshotTankLoaded.png",
+    "BMS - Longhook":        "https://foxhole.wiki.gg/images/LonghookFront.png",
+    "BMS - Bowhead":         "https://foxhole.wiki.gg/images/thumb/ResourceShip.jpg/1280px-ResourceShip.jpg?127e65",
+    "BMS - Bluefin":         "https://foxhole.wiki.gg/images/thumb/StorageShip.jpg/1280px-StorageShip.jpg?879557",
+    "Bellweather by VAC":    "https://foxhole.wiki.gg/images/BellweatherbyVACFront.jpg",
+    "Das Krokodil by VAC":   "https://foxhole.wiki.gg/images/thumb/DasKrokodilbyVACFront.jpg/1024px-DasKrokodilbyVACFront.jpg?6221d3",
+}
+
+
+def get_unit_image(unit: str) -> str | None:
+    url = UNIT_IMAGES.get(unit, "")
+    return url if url else None
+
 MAP_HEXES = [
     "Acrithia", "Allod's Bight", "Ash Fields", "Basin Sionnach",
     "Callahan's Passage", "Callum's Cape", "Clanshead Valley",
@@ -280,18 +330,40 @@ class KillModal(discord.ui.Modal, title="🎯 Report Kill"):
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-        crew_mentions = " ".join(f"<@{c['id']}>" for c in crew_list) if crew_list else "*No crew tagged*"
-        report_line = f"🎯 **CONFIRMED SINK** — {interaction.user.mention} reports **{qty}x {self.unit_value}** destroyed."
-        if self.notes.value:
-            report_line += f" *{self.notes.value}*"
+        crew_mentions = " ".join(f"<@{c['id']}>" for c in crew_list) if crew_list else "*none on record*"
+        ts = datetime.now(timezone.utc).strftime("%d %b %Y  %H%MZ").upper()
+
+        memo = (
+            "```\n"
+            "══════════════════════════════════════════\n"
+            "   NAVY REPORTER  ·  WAR DEPARTMENT\n"
+            "   COMBAT ACTION REPORT — CONFIDENTIAL\n"
+            "══════════════════════════════════════════\n"
+            f"  TARGET    : {qty}x {self.unit_value}\n"
+            f"  SECTOR    : {self.hex_value}\n"
+            f"  WAR NO.   : #{war}\n"
+            f"  FILED BY  : {interaction.user.display_name}\n"
+            f"  DATE/TIME : {ts}\n"
+            "══════════════════════════════════════════\n"
+            "  [ ENEMY UNIT ELIMINATED — CONFIRMED ]\n"
+            "══════════════════════════════════════════\n"
+            "```"
+        )
 
         embed = discord.Embed(
-            title=f"{self.unit_value} — Destroyed",
-            description=report_line,
-            color=discord.Color.green(),
+            title="☠  KILL CONFIRMED",
+            description=memo,
+            color=0x4b5320,
         )
-        embed.add_field(name="📍 Location & Crew", value=f"**{self.hex_value}**\n{crew_mentions}", inline=False)
-        embed.set_footer(text=f"Logged by {interaction.user.display_name} • War #{war}")
+        embed.add_field(name="CREW ON RECORD", value=crew_mentions, inline=False)
+        if self.notes.value:
+            embed.add_field(name="FIELD NOTES", value=f"*{self.notes.value}*", inline=False)
+
+        img_url = get_unit_image(self.unit_value)
+        if img_url:
+            embed.set_image(url=img_url)
+
+        embed.set_footer(text=f"NAVY REPORTER  ·  INTELLIGENCE DIVISION  ·  WAR #{war}")
         embed.timestamp = datetime.now(timezone.utc)
 
         await interaction.response.send_message("✅ Kill logged!", ephemeral=True)
@@ -336,18 +408,40 @@ class LossModal(discord.ui.Modal, title="⚰️ Report Loss"):
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-        crew_mentions = " ".join(f"<@{c['id']}>" for c in crew_list) if crew_list else "*No crew tagged*"
-        report_line = f"⚰️ **CONFIRMED LOSS** — {interaction.user.mention} reports **{qty}x {self.unit_value}** lost."
-        if self.notes.value:
-            report_line += f" *{self.notes.value}*"
+        crew_mentions = " ".join(f"<@{c['id']}>" for c in crew_list) if crew_list else "*none on record*"
+        ts = datetime.now(timezone.utc).strftime("%d %b %Y  %H%MZ").upper()
+
+        memo = (
+            "```\n"
+            "══════════════════════════════════════════\n"
+            "   NAVY REPORTER  ·  WAR DEPARTMENT\n"
+            "   INCIDENT REPORT — CONFIDENTIAL\n"
+            "══════════════════════════════════════════\n"
+            f"  VESSEL    : {qty}x {self.unit_value}\n"
+            f"  SECTOR    : {self.hex_value}\n"
+            f"  WAR NO.   : #{war}\n"
+            f"  FILED BY  : {interaction.user.display_name}\n"
+            f"  DATE/TIME : {ts}\n"
+            "══════════════════════════════════════════\n"
+            "  [ UNIT LOST IN ACTION — CONFIRMED ]\n"
+            "══════════════════════════════════════════\n"
+            "```"
+        )
 
         embed = discord.Embed(
-            title=f"{self.unit_value} — Lost In Action",
-            description=report_line,
-            color=discord.Color.red(),
+            title="⚰  UNIT LOST IN ACTION",
+            description=memo,
+            color=0x6b1a1a,
         )
-        embed.add_field(name="📍 Location & Crew", value=f"**{self.hex_value}**\n{crew_mentions}", inline=False)
-        embed.set_footer(text=f"Logged by {interaction.user.display_name} • War #{war}")
+        embed.add_field(name="CREW ON RECORD", value=crew_mentions, inline=False)
+        if self.notes.value:
+            embed.add_field(name="FIELD NOTES", value=f"*{self.notes.value}*", inline=False)
+
+        img_url = get_unit_image(self.unit_value)
+        if img_url:
+            embed.set_image(url=img_url)
+
+        embed.set_footer(text=f"NAVY REPORTER  ·  INTELLIGENCE DIVISION  ·  WAR #{war}")
         embed.timestamp = datetime.now(timezone.utc)
 
         await interaction.response.send_message("✅ Loss logged.", ephemeral=True)
