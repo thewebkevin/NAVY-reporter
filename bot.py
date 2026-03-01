@@ -331,30 +331,15 @@ class KillModal(discord.ui.Modal, title="🎯 Report Kill"):
         )
 
         crew_mentions = " ".join(f"<@{c['id']}>" for c in crew_list) if crew_list else "*none on record*"
-        ts = datetime.now(timezone.utc).strftime("%d %b %Y  %H%MZ").upper()
-
-        memo = (
-            "```\n"
-            "══════════════════════════════════════════\n"
-            "   NAVY REPORTER  ·  WAR DEPARTMENT\n"
-            "   COMBAT ACTION REPORT — CONFIDENTIAL\n"
-            "══════════════════════════════════════════\n"
-            f"  TARGET    : {qty}x {self.unit_value}\n"
-            f"  SECTOR    : {self.hex_value}\n"
-            f"  WAR NO.   : #{war}\n"
-            f"  FILED BY  : {interaction.user.display_name}\n"
-            f"  DATE/TIME : {ts}\n"
-            "══════════════════════════════════════════\n"
-            "  [ ENEMY UNIT ELIMINATED — CONFIRMED ]\n"
-            "══════════════════════════════════════════\n"
-            "```"
-        )
 
         embed = discord.Embed(
             title="☠  KILL CONFIRMED",
-            description=memo,
+            description="**ENEMY UNIT ELIMINATED** — *Combat Action Report*",
             color=0x4b5320,
         )
+        embed.add_field(name="TARGET", value=f"**{qty}×** {self.unit_value}", inline=True)
+        embed.add_field(name="SECTOR", value=self.hex_value, inline=True)
+        embed.add_field(name="WAR NO.", value=f"#{war}", inline=True)
         embed.add_field(name="CREW ON RECORD", value=crew_mentions, inline=False)
         if self.notes.value:
             embed.add_field(name="FIELD NOTES", value=f"*{self.notes.value}*", inline=False)
@@ -363,7 +348,7 @@ class KillModal(discord.ui.Modal, title="🎯 Report Kill"):
         if img_url:
             embed.set_image(url=img_url)
 
-        embed.set_footer(text=f"NAVY REPORTER  ·  INTELLIGENCE DIVISION  ·  WAR #{war}")
+        embed.set_footer(text=f"Filed by {interaction.user.display_name}  ·  OFFICE OF NAVAL INTELLIGENCE")
         embed.timestamp = datetime.now(timezone.utc)
 
         await interaction.response.send_message("✅ Kill logged!", ephemeral=True)
@@ -409,30 +394,15 @@ class LossModal(discord.ui.Modal, title="⚰️ Report Loss"):
         )
 
         crew_mentions = " ".join(f"<@{c['id']}>" for c in crew_list) if crew_list else "*none on record*"
-        ts = datetime.now(timezone.utc).strftime("%d %b %Y  %H%MZ").upper()
-
-        memo = (
-            "```\n"
-            "══════════════════════════════════════════\n"
-            "   NAVY REPORTER  ·  WAR DEPARTMENT\n"
-            "   INCIDENT REPORT — CONFIDENTIAL\n"
-            "══════════════════════════════════════════\n"
-            f"  VESSEL    : {qty}x {self.unit_value}\n"
-            f"  SECTOR    : {self.hex_value}\n"
-            f"  WAR NO.   : #{war}\n"
-            f"  FILED BY  : {interaction.user.display_name}\n"
-            f"  DATE/TIME : {ts}\n"
-            "══════════════════════════════════════════\n"
-            "  [ UNIT LOST IN ACTION — CONFIRMED ]\n"
-            "══════════════════════════════════════════\n"
-            "```"
-        )
 
         embed = discord.Embed(
             title="⚰  UNIT LOST IN ACTION",
-            description=memo,
+            description="**VESSEL LOST IN COMBAT** — *Incident Report*",
             color=0x6b1a1a,
         )
+        embed.add_field(name="VESSEL", value=f"**{qty}×** {self.unit_value}", inline=True)
+        embed.add_field(name="SECTOR", value=self.hex_value, inline=True)
+        embed.add_field(name="WAR NO.", value=f"#{war}", inline=True)
         embed.add_field(name="CREW ON RECORD", value=crew_mentions, inline=False)
         if self.notes.value:
             embed.add_field(name="FIELD NOTES", value=f"*{self.notes.value}*", inline=False)
@@ -441,7 +411,7 @@ class LossModal(discord.ui.Modal, title="⚰️ Report Loss"):
         if img_url:
             embed.set_image(url=img_url)
 
-        embed.set_footer(text=f"NAVY REPORTER  ·  INTELLIGENCE DIVISION  ·  WAR #{war}")
+        embed.set_footer(text=f"Filed by {interaction.user.display_name}  ·  OFFICE OF NAVAL INTELLIGENCE")
         embed.timestamp = datetime.now(timezone.utc)
 
         await interaction.response.send_message("✅ Loss logged.", ephemeral=True)
