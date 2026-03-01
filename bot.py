@@ -193,6 +193,37 @@ def user_in_crew(uid: int, entry: dict) -> bool:
     return any(c["id"] == uid for c in entry.get("crew", []))
 
 
+def get_recent_by_reporter(reporter_id: int, limit: int = 5) -> list[dict]:
+    results = []
+    with db() as conn:
+        kills  = conn.execute(
+            "SELECT *, 'kill' as type FROM kills  WHERE reporter_id=? ORDER BY id DESC LIMIT ?",
+            (reporter_id, limit),
+        ).fetchall()
+        losses = conn.execute(
+            "SELECT *, 'loss' as type FROM losses WHERE reporter_id=? ORDER BY id DESC LIMIT ?",
+            (reporter_id, limit),
+        ).fetchall()
+    for row in list(kills) + list(losses):
+        d = dict(row)
+        d["crew"] = json.loads(d["crew"])
+        results.append(d)
+    results.sort(key=lambda x: x["timestamp"], reverse=True)
+    return results[:limit]
+
+
+def delete_entry(entry_id: int, entry_type: str):
+    table = "kills" if entry_type == "kill" else "losses"
+    with db() as conn:
+        conn.execute(f"DELETE FROM {table} WHERE id=?", (entry_id,))
+
+
+def clear_all_entries():
+    with db() as conn:
+        conn.execute("DELETE FROM kills")
+        conn.execute("DELETE FROM losses")
+
+
 # ── Role check ────────────────────────────────────────────────────────────────
 def officer_only():
     async def predicate(interaction: discord.Interaction) -> bool:
@@ -524,6 +555,69 @@ async def new_war_cmd(interaction: discord.Interaction):
     set_cfg("war_number", old_war + 1)
     await interaction.response.send_message(
         f"✅ War #{old_war} archived. **War #{old_war + 1}** has begun! Previous stats are preserved.",
+    )
+
+
+@tree.command(name="set_war", description="[Admin] Set the war number directly and optionally clear all data")
+@app_commands.describe(
+    number="The war number to set (e.g. 132)",
+    clear="Wipe all existing kill/loss data (default: False)",
+)
+@app_commands.checks.has_permissions(administrator=True)
+async def set_war_cmd(interaction: discord.Interaction, number: int, clear: bool = False):
+    old_war = get_war()
+    set_cfg("war_number", number)
+    if clear:
+        clear_all_entries()
+        await interaction.response.send_message(
+            f"✅ War number set to **#{number}** (was #{old_war}). All kill/loss data has been wiped.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.response.send_message(
+            f"✅ War number set to **#{number}** (was #{old_war}). Existing data preserved.",
+            ephemeral=True,
+        )
+
+
+# ── Delete entry UI ───────────────────────────────────────────────────────────
+class DeleteSelect(discord.ui.Select):
+    def __init__(self, entries: list[dict]):
+        options = []
+        for e in entries:
+            kind  = "💀 Kill" if e["type"] == "kill" else "⚰️ Loss"
+            label = f"{kind}: {e['quantity']}x {e['unit']} @ {e['location']}"
+            options.append(discord.SelectOption(
+                label=label[:100],
+                value=f"{e['type']}:{e['id']}",
+                description=f"War #{e['war']} • {e['timestamp'][:10]}",
+            ))
+        super().__init__(placeholder="Select the entry to delete…", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        entry_type, entry_id = self.values[0].split(":", 1)
+        delete_entry(int(entry_id), entry_type)
+        kind = "Kill" if entry_type == "kill" else "Loss"
+        await interaction.response.edit_message(
+            content=f"✅ {kind} entry deleted.", view=None,
+        )
+
+
+class DeleteView(discord.ui.View):
+    def __init__(self, entries: list[dict]):
+        super().__init__(timeout=60)
+        self.add_item(DeleteSelect(entries))
+
+
+@tree.command(name="delete", description="Delete one of your recent kill/loss entries")
+@officer_only()
+async def delete_cmd(interaction: discord.Interaction):
+    entries = get_recent_by_reporter(interaction.user.id, limit=5)
+    if not entries:
+        await interaction.response.send_message("You have no recent entries to delete.", ephemeral=True)
+        return
+    await interaction.response.send_message(
+        "Select the entry you want to remove:", view=DeleteView(entries), ephemeral=True,
     )
 
 
