@@ -1005,7 +1005,17 @@ async def stockpile_create_cmd(
     await log_action(stockpile_id, interaction.user.id, str(interaction.user), "created")
     row = await get_stockpile(stockpile_id)
     view = StockpileResetView(stockpile_id)
-    msg = await interaction.channel.send(embed=build_stockpile_embed(row), view=view)
+    try:
+        msg = await interaction.channel.send(embed=build_stockpile_embed(row), view=view)
+    except discord.Forbidden:
+        await remove_stockpile(stockpile_id)
+        await interaction.followup.send(
+            f"⚠️ I don't have permission to post in {interaction.channel.mention}. "
+            "Give me **View Channel**, **Send Messages**, and **Embed Links** permissions there, "
+            "then run `/stockpile create` again.",
+            ephemeral=True,
+        )
+        return
     await set_message_id(stockpile_id, msg.id)
     bot.add_view(view, message_id=msg.id)
     await interaction.followup.send(f"✅ Now tracking **{name}**.", ephemeral=True)
