@@ -697,7 +697,8 @@ PG_POOL: asyncpg.Pool | None = None
 STOCKPILE_SCHEMA = """
     CREATE TABLE IF NOT EXISTS guild_settings (
         guild_id             BIGINT PRIMARY KEY,
-        default_warn_role_id BIGINT
+        default_warn_role_id BIGINT,
+        stockpile_channel_id BIGINT
     );
 
     CREATE TABLE IF NOT EXISTS stockpiles (
@@ -706,6 +707,8 @@ STOCKPILE_SCHEMA = """
         channel_id           BIGINT NOT NULL,
         message_id           BIGINT,
         name                 TEXT NOT NULL,
+        location             TEXT NOT NULL DEFAULT '',
+        access_code          TEXT NOT NULL DEFAULT '',
         duration_hours       REAL NOT NULL DEFAULT 48,
         warn_threshold_hours REAL NOT NULL DEFAULT 6,
         warn_repeat_minutes  INT,
@@ -726,6 +729,11 @@ STOCKPILE_SCHEMA = """
         action       TEXT NOT NULL,
         at           TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    -- Migrations for columns added after the initial release (safe to re-run).
+    ALTER TABLE guild_settings ADD COLUMN IF NOT EXISTS stockpile_channel_id BIGINT;
+    ALTER TABLE stockpiles ADD COLUMN IF NOT EXISTS location    TEXT NOT NULL DEFAULT '';
+    ALTER TABLE stockpiles ADD COLUMN IF NOT EXISTS access_code TEXT NOT NULL DEFAULT '';
 """
 
 
@@ -742,15 +750,17 @@ async def init_stockpile_db():
         await conn.execute(STOCKPILE_SCHEMA)
 
 
-async def create_stockpile(guild_id: int, channel_id: int, name: str, duration_hours: float,
-                            warn_threshold_hours: float, warn_repeat_minutes: int | None,
+async def create_stockpile(guild_id: int, channel_id: int, name: str, location: str, access_code: str,
+                            duration_hours: float, warn_threshold_hours: float, warn_repeat_minutes: int | None,
                             warn_role_id: int | None) -> int:
     pool = await get_pool()
     return await pool.fetchval(
         """INSERT INTO stockpiles
-               (guild_id, channel_id, name, duration_hours, warn_threshold_hours, warn_repeat_minutes, warn_role_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id""",
-        guild_id, channel_id, name, duration_hours, warn_threshold_hours, warn_repeat_minutes, warn_role_id,
+               (guild_id, channel_id, name, location, access_code,
+                duration_hours, warn_threshold_hours, warn_repeat_minutes, warn_role_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id""",
+        guild_id, channel_id, name, location, access_code,
+        duration_hours, warn_threshold_hours, warn_repeat_minutes, warn_role_id,
     )
 
 
@@ -837,6 +847,40 @@ async def set_default_role(guild_id: int, role_id: int):
     )
 
 
+async def get_stockpile_channel_id(guild_id: int) -> int | None:
+    pool = await get_pool()
+    row = await pool.fetchrow("SELECT stockpile_channel_id FROM guild_settings WHERE guild_id=$1", guild_id)
+    return row["stockpile_channel_id"] if row else None
+
+
+async def set_stockpile_channel(guild_id: int, channel_id: int):
+    pool = await get_pool()
+    await pool.execute(
+        """INSERT INTO guild_settings (guild_id, stockpile_channel_id) VALUES ($1,$2)
+           ON CONFLICT (guild_id) DO UPDATE SET stockpile_channel_id=$2""",
+        guild_id, channel_id,
+    )
+
+
+async def perform_stockpile_removal(stockpile_id: int, actor_id: int, actor_name: str) -> dict | None:
+    """Soft-deletes a stockpile and logs the removal. Returns the pre-removal row, or None if
+    it was already inactive."""
+    row = await get_stockpile(stockpile_id)
+    if not row or not row["active"]:
+        return None
+    await remove_stockpile(stockpile_id)
+    await log_action(stockpile_id, actor_id, actor_name, "removed")
+    return row
+
+
+def build_removed_embed(name: str) -> discord.Embed:
+    return discord.Embed(
+        title=f"📦 {name} — REMOVED",
+        description="No longer being tracked.",
+        color=discord.Color.greyple(),
+    )
+
+
 async def ensure_db_available(interaction: discord.Interaction) -> bool:
     if not DATABASE_URL:
         await interaction.response.send_message(
@@ -846,6 +890,28 @@ async def ensure_db_available(interaction: discord.Interaction) -> bool:
         )
         return False
     return True
+
+
+async def require_stockpile_channel(interaction: discord.Interaction) -> discord.abc.Messageable | None:
+    """Confirms a stockpile channel is configured and the command is being run inside it —
+    this is what keeps access codes restricted to whoever has access to that channel.
+    Sends an error and returns None if either check fails."""
+    channel_id = await get_stockpile_channel_id(interaction.guild_id)
+    if not channel_id:
+        await interaction.response.send_message(
+            "⚠️ No stockpile channel has been configured yet. An admin needs to run "
+            "`/stockpile set_channel` first.",
+            ephemeral=True,
+        )
+        return None
+    if interaction.channel_id != channel_id:
+        channel = interaction.client.get_channel(channel_id)
+        mention = channel.mention if channel else f"<#{channel_id}>"
+        await interaction.response.send_message(
+            f"❌ This command can only be used in {mention}.", ephemeral=True,
+        )
+        return None
+    return interaction.channel
 
 
 # ── Stockpile timers: embed & button ────────────────────────────────────────────
@@ -871,7 +937,9 @@ def build_stockpile_embed(row: dict) -> discord.Embed:
         value=f"{STOCKPILE_STATUS_EMOJI.get(status, '⚪')} {status.upper()}",
         inline=True,
     )
-    embed.add_field(name="Expires", value=f"<t:{expires_unix}:R>", inline=True)
+    embed.add_field(name="📍 Location", value=row["location"] or "—", inline=True)
+    embed.add_field(name="🔑 Access Code", value=f"`{row['access_code']}`" if row["access_code"] else "—", inline=True)
+    embed.add_field(name="⏳ Expires", value=f"<t:{expires_unix}:R>", inline=True)
     if row["reset_by_id"]:
         reset_unix = int(row["last_reset_at"].timestamp())
         embed.add_field(
@@ -887,14 +955,24 @@ class StockpileResetView(discord.ui.View):
     def __init__(self, stockpile_id: int):
         super().__init__(timeout=None)
         self.stockpile_id = stockpile_id
-        button = discord.ui.Button(
+
+        reset_button = discord.ui.Button(
             label="Reset Timer",
             emoji="🔄",
             style=discord.ButtonStyle.success,
             custom_id=f"stockpile_reset:{stockpile_id}",
         )
-        button.callback = self.on_reset
-        self.add_item(button)
+        reset_button.callback = self.on_reset
+        self.add_item(reset_button)
+
+        delete_button = discord.ui.Button(
+            label="Delete",
+            emoji="🗑️",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"stockpile_delete:{stockpile_id}",
+        )
+        delete_button.callback = self.on_delete
+        self.add_item(delete_button)
 
     async def on_reset(self, interaction: discord.Interaction):
         row = await get_stockpile(self.stockpile_id)
@@ -909,6 +987,24 @@ class StockpileResetView(discord.ui.View):
             print(f"[stockpile] reset failed for #{self.stockpile_id}: {e}")
             if not interaction.response.is_done():
                 await interaction.response.send_message("⚠️ Something went wrong resetting this timer.", ephemeral=True)
+
+    async def on_delete(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "❌ You need Administrator permission to delete a tracked stockpile.", ephemeral=True,
+            )
+            return
+        try:
+            row = await perform_stockpile_removal(self.stockpile_id, interaction.user.id, str(interaction.user))
+        except Exception as e:
+            print(f"[stockpile] delete failed for #{self.stockpile_id}: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Something went wrong deleting this stockpile.", ephemeral=True)
+            return
+        if not row:
+            await interaction.response.send_message("This stockpile was already removed.", ephemeral=True)
+            return
+        await interaction.response.edit_message(embed=build_removed_embed(row["name"]), view=None)
 
 
 class StockpileSelect(discord.ui.Select):
@@ -939,20 +1035,13 @@ class StockpileSelect(discord.ui.Select):
             await interaction.response.edit_message(content="\n".join(lines), view=None)
 
         elif self.purpose == "remove":
-            row = await get_stockpile(stockpile_id)
-            await remove_stockpile(stockpile_id)
-            await log_action(stockpile_id, interaction.user.id, str(interaction.user), "removed")
+            row = await perform_stockpile_removal(stockpile_id, interaction.user.id, str(interaction.user))
             if row and row["message_id"]:
                 channel = interaction.client.get_channel(row["channel_id"])
                 if channel:
                     try:
                         msg = await channel.fetch_message(row["message_id"])
-                        removed_embed = discord.Embed(
-                            title=f"📦 {row['name']} — REMOVED",
-                            description="No longer being tracked.",
-                            color=discord.Color.greyple(),
-                        )
-                        await msg.edit(embed=removed_embed, view=None)
+                        await msg.edit(embed=build_removed_embed(row["name"]), view=None)
                     except (discord.NotFound, discord.Forbidden):
                         pass
             name = row["name"] if row else "stockpile"
@@ -971,7 +1060,9 @@ stockpile_group = app_commands.Group(name="stockpile", description="Track privat
 
 @stockpile_group.command(name="create", description="Start tracking a new stockpile timer")
 @app_commands.describe(
-    name="Name/location of the stockpile (e.g. 'Bridgehead A depot')",
+    name="Name for the stockpile (e.g. 'Bridgehead A depot')",
+    location="Where it is in-game (map hex / coordinates)",
+    access_code="The in-game access code for this stockpile",
     hours="Hours until it expires if not reset (default 48)",
     warn_hours="Hours remaining at which to start warning (default 6)",
     warn_repeat_minutes="Repeat the warning every N minutes while low (optional; default: warn once)",
@@ -981,6 +1072,8 @@ stockpile_group = app_commands.Group(name="stockpile", description="Track privat
 async def stockpile_create_cmd(
     interaction: discord.Interaction,
     name: str,
+    location: str,
+    access_code: str,
     hours: float = 48.0,
     warn_hours: float = 6.0,
     warn_repeat_minutes: int = None,
@@ -992,11 +1085,33 @@ async def stockpile_create_cmd(
         await interaction.response.send_message("❌ `hours` and `warn_hours` must be greater than 0.", ephemeral=True)
         return
 
-    await interaction.response.defer()
+    # The post (and its access code) always goes to the configured stockpile channel,
+    # regardless of where this command was run — that channel's permissions are what
+    # keeps the access code restricted to the ranks that should see it.
+    target_channel_id = await get_stockpile_channel_id(interaction.guild_id)
+    if not target_channel_id:
+        await interaction.response.send_message(
+            "⚠️ No stockpile channel has been configured yet. An admin needs to run "
+            "`/stockpile set_channel` first.",
+            ephemeral=True,
+        )
+        return
+    target_channel = interaction.client.get_channel(target_channel_id)
+    if target_channel is None:
+        await interaction.response.send_message(
+            "⚠️ The configured stockpile channel no longer exists. An admin needs to run "
+            "`/stockpile set_channel` again.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
     stockpile_id = await create_stockpile(
         guild_id=interaction.guild_id,
-        channel_id=interaction.channel_id,
+        channel_id=target_channel_id,
         name=name,
+        location=location,
+        access_code=access_code,
         duration_hours=hours,
         warn_threshold_hours=warn_hours,
         warn_repeat_minutes=warn_repeat_minutes,
@@ -1006,11 +1121,11 @@ async def stockpile_create_cmd(
     row = await get_stockpile(stockpile_id)
     view = StockpileResetView(stockpile_id)
     try:
-        msg = await interaction.channel.send(embed=build_stockpile_embed(row), view=view)
+        msg = await target_channel.send(embed=build_stockpile_embed(row), view=view)
     except discord.Forbidden:
         await remove_stockpile(stockpile_id)
         await interaction.followup.send(
-            f"⚠️ I don't have permission to post in {interaction.channel.mention}. "
+            f"⚠️ I don't have permission to post in {target_channel.mention}. "
             "Give me **View Channel**, **Send Messages**, and **Embed Links** permissions there, "
             "then run `/stockpile create` again.",
             ephemeral=True,
@@ -1018,12 +1133,14 @@ async def stockpile_create_cmd(
         return
     await set_message_id(stockpile_id, msg.id)
     bot.add_view(view, message_id=msg.id)
-    await interaction.followup.send(f"✅ Now tracking **{name}**.", ephemeral=True)
+    await interaction.followup.send(f"✅ Now tracking **{name}** in {target_channel.mention}.", ephemeral=True)
 
 
-@stockpile_group.command(name="list", description="List tracked stockpiles in this server")
+@stockpile_group.command(name="list", description="List tracked stockpiles (only usable in the stockpile channel)")
 async def stockpile_list_cmd(interaction: discord.Interaction):
     if not await ensure_db_available(interaction):
+        return
+    if not await require_stockpile_channel(interaction):
         return
     rows = await list_stockpiles(interaction.guild_id)
     if not rows:
@@ -1036,15 +1153,18 @@ async def stockpile_list_cmd(interaction: discord.Interaction):
         expires_at = r["last_reset_at"] + timedelta(hours=r["duration_hours"])
         unix = int(expires_at.timestamp())
         lines.append(
-            f"{STOCKPILE_STATUS_EMOJI.get(r['status'], '⚪')} **{r['name']}** — <t:{unix}:R> · <#{r['channel_id']}>"
+            f"{STOCKPILE_STATUS_EMOJI.get(r['status'], '⚪')} **{r['name']}** — 📍 {r['location'] or '—'} · "
+            f"🔑 `{r['access_code'] or '—'}` · <t:{unix}:R>"
         )
     embed = discord.Embed(title="📦 Tracked Stockpiles", description="\n".join(lines), color=discord.Color.blurple())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@stockpile_group.command(name="history", description="View recent reset history for a stockpile")
+@stockpile_group.command(name="history", description="View recent reset history for a stockpile (only usable in the stockpile channel)")
 async def stockpile_history_cmd(interaction: discord.Interaction):
     if not await ensure_db_available(interaction):
+        return
+    if not await require_stockpile_channel(interaction):
         return
     rows = await list_stockpiles(interaction.guild_id)
     if not rows:
@@ -1055,10 +1175,12 @@ async def stockpile_history_cmd(interaction: discord.Interaction):
     )
 
 
-@stockpile_group.command(name="remove", description="[Admin] Stop tracking a stockpile")
+@stockpile_group.command(name="remove", description="[Admin] Stop tracking a stockpile (only usable in the stockpile channel)")
 @app_commands.checks.has_permissions(administrator=True)
 async def stockpile_remove_cmd(interaction: discord.Interaction):
     if not await ensure_db_available(interaction):
+        return
+    if not await require_stockpile_channel(interaction):
         return
     rows = await list_stockpiles(interaction.guild_id)
     if not rows:
@@ -1078,6 +1200,20 @@ async def stockpile_set_default_role_cmd(interaction: discord.Interaction, role:
     await set_default_role(interaction.guild_id, role.id)
     await interaction.response.send_message(
         f"✅ {role.mention} will be pinged for stockpile warnings by default.", ephemeral=True,
+    )
+
+
+@stockpile_group.command(name="set_channel", description="[Admin] Set the restricted channel stockpile timers are posted and managed in")
+@app_commands.describe(channel="The channel only your stockpile-access ranks can see")
+@app_commands.checks.has_permissions(administrator=True)
+async def stockpile_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await ensure_db_available(interaction):
+        return
+    await set_stockpile_channel(interaction.guild_id, channel.id)
+    await interaction.response.send_message(
+        f"✅ Stockpile timers will now be posted in {channel.mention}. "
+        f"`/stockpile list`, `/stockpile history`, and `/stockpile remove` can only be used there.",
+        ephemeral=True,
     )
 
 
